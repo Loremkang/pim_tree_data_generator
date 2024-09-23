@@ -1,0 +1,6 @@
+[submodule "parlaylib"]
+	path = parlaylib
+	url = https://github.com/cmuparlay/parlaylib.git
+[submodule "argparse"]
+	path = argparse
+	url = https://github.com/p-ranav/argparse.git
