@@ -170,6 +170,7 @@ void GenerateGetBatch(union_operation* target, size_t batch_size,
 
         target[i].type = batch_type;
         target[i].tsk.g.key = get_keys;
+        assert(oracle.predecessor(get_keys).key == get_keys);
     });
     zipf_gen.PrintTopKHotestPartition(batch_size, [&](size_t i) {
         return target[i].tsk.g.key;
