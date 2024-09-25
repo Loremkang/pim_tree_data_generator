@@ -53,7 +53,7 @@ class Oracle {
             if (itr != data.end()) {
                 ret[i] = (key_value)(*itr);
             } else {
-                ret[i] = (key_value){INT64_MIN, INT64_MIN};
+                ret[i] = (key_value)(INT64_MIN, INT64_MIN);
             }
         });
         return ret;
@@ -68,7 +68,7 @@ class Oracle {
         parlay::parallel_for(0, size, [&](size_t i) {
             auto itr = data.upper_bound(get_key(i));
             itr--;
-            ret[i] = (key_value){.key = itr->first, .value = itr->second};
+            ret[i] = (key_value)(*itr);
         });
         return ret;
     }
@@ -114,7 +114,7 @@ class Oracle {
             auto lpos = data.lower_bound(lkey);
             auto rpos = data.upper_bound(rkey);
             for (auto itr = lpos; itr != rpos; itr++) {
-                ret[i].push_back((key_value){.key = itr->first, .value = itr->second});
+                ret[i].push_back((key_value)(*itr));
             }
         });
         return ret;

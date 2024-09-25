@@ -8,28 +8,29 @@
 
 // generate zipfian distributed element indexes in [0, n) according to the given alpha
 class ZipfianGenerator {
+    uint64_t num_partition_;
     double alpha_;
-    int num_partition_;
+    
     std::vector<double> zipf_possibility_, zipf_possibility_aggregated_;
 
     uint64_t range_size;
     const size_t random_resolution = 1048576;
 
 public:
-    ZipfianGenerator(int n, double alpha) : num_partition_(n), alpha_(alpha) {
+    ZipfianGenerator(size_t n, double alpha) : num_partition_(n), alpha_(alpha) {
         double sum = 0;
         zipf_possibility_.resize(n, 1.0);
         zipf_possibility_aggregated_.resize(n, 0.0);
-        for (int i = 0; i < n; i++) {
+        for (size_t i = 0; i < n; i++) {
             zipf_possibility_[i] /= pow(i + 1, alpha);
             sum += zipf_possibility_[i];
         }
-        for (int i = 0; i < n; i++) {
+        for (size_t i = 0; i < n; i++) {
             zipf_possibility_[i] /= sum;
         }
         zipf_possibility_aggregated_[0] = zipf_possibility_[0];
 
-        for (int i = 1; i < n; i++) {
+        for (size_t i = 1; i < n; i++) {
             zipf_possibility_aggregated_[i] = zipf_possibility_aggregated_[i - 1] + zipf_possibility_[i];
         }
 
@@ -38,7 +39,7 @@ public:
         assert(UINT64_MAX - (range_size * (num_partition_ - 1)) + 1 <= range_size);
 
         // Print the possibilities
-        for (int i = 0; i < 5; i++) {
+        for (size_t i = 0; i < 5; i++) {
             std::cout << "Index " << i << " possibility: " << zipf_possibility_[i] << " reversed: " << 1.0 / zipf_possibility_[i] << std::endl;
         }
         // Print range size
@@ -46,7 +47,7 @@ public:
     }
 
     // return (l, size) for range[l, l + size)
-    std::pair<uint64_t, uint64_t> KeyRangeForPartition(int partition_id) {
+    std::pair<uint64_t, uint64_t> KeyRangeForPartition(size_t partition_id) {
         uint64_t start = range_size * partition_id;
         if (UINT64_MAX - start < range_size) {
             return {start, UINT64_MAX - start + 1};
@@ -59,7 +60,7 @@ public:
         return key / range_size;
     }
 
-    std::vector<size_t> Generate(int m, size_t seed = 0, bool shuffle = true) {
+    std::vector<size_t> Generate(size_t m, size_t seed = 0, bool shuffle = true) {
         std::vector<size_t> res(m);
         std::vector<size_t> shuffled_index(num_partition_);
         for (size_t i = 0; i < num_partition_; i ++) {
@@ -72,8 +73,8 @@ public:
 
         parlay::parallel_for(0, m, [&](int i) {
             size_t rnd = parlay::hash64(i + seed) % random_resolution;
-            double r = (double)rnd / random_resolution;
-            int idx = std::lower_bound(zipf_possibility_aggregated_.begin(),
+            double r = (double)rnd / (double)random_resolution;
+            size_t idx = std::lower_bound(zipf_possibility_aggregated_.begin(),
                                        zipf_possibility_aggregated_.end(), r) -
                       zipf_possibility_aggregated_.begin();
             res[i] = shuffled_index[idx];
@@ -104,7 +105,7 @@ public:
         for (size_t i = 0; i < k; i ++) {
             std::cout << "Partition " << partition_count_with_id[i].second
                       << " has " << std::fixed << std::setprecision(2)
-                      << (double)partition_count_with_id[i].first / size * 100 << "% keys" << std::endl;
+                      << (double)partition_count_with_id[i].first / (double)size * 100.0 << "% keys" << std::endl;
         }
     }
 };

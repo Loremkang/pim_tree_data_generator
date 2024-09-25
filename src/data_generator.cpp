@@ -27,10 +27,11 @@ const double EPS = 1e-12;
 const size_t kNumPartitions = 64;
 const size_t kPrintTopK = 10;
 
-std::vector<uint64_t> UniformRandomKeys(size_t size, size_t seed, bool sort) {
-    std::vector<uint64_t> ret(size);
-    parlay::parallel_for(0, size,
-                         [&](size_t i) { ret[i] = parlay::hash64(seed + i); });
+std::vector<int64_t> UniformRandomKeys(size_t size, size_t seed, bool sort) {
+    std::vector<int64_t> ret(size);
+    parlay::parallel_for(0, size, [&](size_t i) {
+        ret[i] = ConvertI64UI64::UI64ToI64(parlay::hash64(seed + i));
+    });
     ret[0] = 0;
     if (sort) {
         parlay::sort_inplace(ret);
@@ -41,8 +42,8 @@ std::vector<uint64_t> UniformRandomKeys(size_t size, size_t seed, bool sort) {
 std::vector<key_value> UniformRandomKVs(size_t size, size_t seed, bool sort) {
     std::vector<key_value> ret(size);
     parlay::parallel_for(0, size, [&](size_t i) {
-        ret[i].key = parlay::hash64(seed + i);
-        ret[i].value = parlay::hash64(ret[i].key);
+        int64_t key = ConvertI64UI64::UI64ToI64(parlay::hash64(seed + i));
+        ret[i] = key_value::default_kv_from_int64_key(key, 0);
     });
     ret[0] = key_value::default_kv_from_int64_key(INT64_MIN, 0);
     if (sort) {
@@ -59,7 +60,7 @@ std::vector<key_value> LoadOrInitKVs(std::string file_name, size_t length) {
     if (stat(file_name.c_str(), &buffer) == 0) {
         kvs = LoadElementsFromBinary<key_value, true>(file_name, 0, length);
         std::cout << "Loaded " << kvs.size() << " keys from " << file_name
-              << std::endl;
+                  << std::endl;
     } else {
         // Initialize keys with some logic if file does not exist
         kvs = UniformRandomKVs(length, 0, true);
@@ -112,9 +113,12 @@ void GenerateGetBatch(union_operation* target, size_t batch_size,
         target[i].tsk.g.key = get_key;
         assert(oracle.Predecessor(get_key).key == get_key);
     });
-    zipf_gen.PrintTopKHotestPartition(batch_size, [&](size_t i) -> uint64_t {
-        return ConvertI64UI64::I64ToUI64(target[i].tsk.g.key);
-    }, kPrintTopK);
+    zipf_gen.PrintTopKHotestPartition(
+        batch_size,
+        [&](size_t i) -> uint64_t {
+            return ConvertI64UI64::I64ToUI64(target[i].tsk.g.key);
+        },
+        kPrintTopK);
 }
 
 void GeneratePredecessorBatch(union_operation* target, size_t batch_size,
@@ -130,9 +134,12 @@ void GeneratePredecessorBatch(union_operation* target, size_t batch_size,
         target[i].type = batch_type;
         target[i].tsk.p.key = gen_key;
     });
-    zipf_gen.PrintTopKHotestPartition(batch_size, [&](size_t i) -> uint64_t {
-        return ConvertI64UI64::I64ToUI64(target[i].tsk.p.key);
-    }, kPrintTopK);
+    zipf_gen.PrintTopKHotestPartition(
+        batch_size,
+        [&](size_t i) -> uint64_t {
+            return ConvertI64UI64::I64ToUI64(target[i].tsk.p.key);
+        },
+        kPrintTopK);
 }
 
 void GenerateInsertBatch(union_operation* target, size_t batch_size,
@@ -145,9 +152,11 @@ void GenerateInsertBatch(union_operation* target, size_t batch_size,
             zipf_gen.KeyRangeForPartition(distribution_in_partitions[i]);
         uint64_t rand_gen_key = start + parlay::hash64(i + seed) % size;
         int64_t gen_key = ConvertI64UI64::UI64ToI64(rand_gen_key);
+        key_value gen_kv =
+            key_value::default_kv_from_int64_key(gen_key, seed + i);
         target[i].type = batch_type;
-        target[i].tsk.i.key = gen_key;
-        target[i].tsk.i.value = parlay::hash64(static_cast<uint64_t>(gen_key));
+        target[i].tsk.i.key = gen_kv.key;
+        target[i].tsk.i.value = gen_kv.value;
     });
     oracle.RunBatchInsert(batch_size, [&](size_t i) {
         key_value kv;
@@ -155,9 +164,12 @@ void GenerateInsertBatch(union_operation* target, size_t batch_size,
         kv.value = target[i].tsk.i.value;
         return kv;
     });
-    zipf_gen.PrintTopKHotestPartition(batch_size, [&](size_t i) -> uint64_t {
-        return ConvertI64UI64::I64ToUI64(target[i].tsk.i.key);
-    }, kPrintTopK);
+    zipf_gen.PrintTopKHotestPartition(
+        batch_size,
+        [&](size_t i) -> uint64_t {
+            return ConvertI64UI64::I64ToUI64(target[i].tsk.i.key);
+        },
+        kPrintTopK);
 }
 
 void GenerateRemoveBatch(union_operation* target, size_t batch_size,
@@ -170,17 +182,20 @@ void GenerateRemoveBatch(union_operation* target, size_t batch_size,
             zipf_gen.KeyRangeForPartition(distribution_in_partitions[i]);
         uint64_t rand_gen_key = start + parlay::hash64(i + seed) % size;
         int64_t gen_key = ConvertI64UI64::UI64ToI64(rand_gen_key);
-        uint64_t remove_key = oracle.Predecessor(gen_key).key;
+        int64_t remove_key = oracle.Predecessor(gen_key).key;
         assert(remove_key != 0);
         target[i].type = batch_type;
         target[i].tsk.r.key = remove_key;
         assert(oracle.Predecessor(remove_key).key == remove_key);
     });
-    zipf_gen.PrintTopKHotestPartition(batch_size, [&](size_t i) -> uint64_t {
-        return ConvertI64UI64::I64ToUI64(target[i].tsk.r.key);
-    }, kPrintTopK);
+    zipf_gen.PrintTopKHotestPartition(
+        batch_size,
+        [&](size_t i) -> uint64_t {
+            return ConvertI64UI64::I64ToUI64(target[i].tsk.r.key);
+        },
+        kPrintTopK);
     oracle.RunBatchRemove(batch_size,
-                        [&](size_t i) { return target[i].tsk.r.key; });
+                          [&](size_t i) { return target[i].tsk.r.key; });
 }
 
 void GenerateScanBatch(union_operation* target, size_t batch_size,
@@ -194,16 +209,20 @@ void GenerateScanBatch(union_operation* target, size_t batch_size,
         auto [start, size] =
             zipf_gen.KeyRangeForPartition(distribution_in_partitions[i]);
         uint64_t rand_gen_key = start + parlay::hash64(i + seed) % size;
+        assert(UINT64_MAX - rand_gen_key >= scan_length);
+
         int64_t gen_key = ConvertI64UI64::UI64ToI64(rand_gen_key);
-        uint64_t scan_key = gen_key;
+        int64_t scan_key = gen_key;
         target[i].type = batch_type;
         target[i].tsk.s.lkey = scan_key;
         target[i].tsk.s.rkey = scan_key + scan_length;
-        assert(INT64_MAX - scan_key >= scan_length);
     });
-    zipf_gen.PrintTopKHotestPartition(batch_size, [&](size_t i) -> uint64_t {
-        return ConvertI64UI64::I64ToUI64(target[i].tsk.s.lkey);
-    }, kPrintTopK);
+    zipf_gen.PrintTopKHotestPartition(
+        batch_size,
+        [&](size_t i) -> uint64_t {
+            return ConvertI64UI64::I64ToUI64(target[i].tsk.s.lkey);
+        },
+        kPrintTopK);
 }
 
 std::vector<union_operation> GenerateInitFile(std::string file_name,
@@ -215,7 +234,7 @@ std::vector<union_operation> GenerateInitFile(std::string file_name,
     std::cout << "KVs size: " << kvs.size() << std::endl;
 
     // shuffle
-    for (size_t i = 0; i < kvs.size(); i ++) {
+    for (size_t i = 0; i < kvs.size(); i++) {
         size_t swap_pos = parlay::hash64(i) % (i + 1);
         std::swap(kvs[i], kvs[swap_pos]);
     }
@@ -255,8 +274,7 @@ std::vector<union_operation> GenerateTestFile(
         switch (batch_type) {
             case operation_t::get_t:
                 GenerateGetBatch(operations.data() + i, batch_size, batch_type,
-                                 alpha, zipf_gen, kNumPartitions,
-                                 oracle, i);
+                                 alpha, zipf_gen, kNumPartitions, oracle, i);
                 break;
             case operation_t::predecessor_t:
                 GeneratePredecessorBatch(operations.data() + i, batch_size,
@@ -265,18 +283,18 @@ std::vector<union_operation> GenerateTestFile(
                 break;
             case operation_t::insert_t:
                 GenerateInsertBatch(operations.data() + i, batch_size,
-                                    batch_type, alpha, zipf_gen,
-                                    kNumPartitions, oracle, i);
+                                    batch_type, alpha, zipf_gen, kNumPartitions,
+                                    oracle, i);
                 break;
             case operation_t::remove_t:
                 GenerateRemoveBatch(operations.data() + i, batch_size,
-                                    batch_type, alpha, zipf_gen,
-                                    kNumPartitions, oracle, i);
+                                    batch_type, alpha, zipf_gen, kNumPartitions,
+                                    oracle, i);
                 break;
             case operation_t::scan_t:
                 GenerateScanBatch(operations.data() + i, batch_size_scan,
-                                  batch_type, alpha, zipf_gen,
-                                  kNumPartitions, oracle, i);
+                                  batch_type, alpha, zipf_gen, kNumPartitions,
+                                  oracle, i);
                 break;
             default:
                 assert(false && "Invalid batch type");
@@ -388,7 +406,8 @@ int main(int argc, char* argv[]) {
                                       kNumPartitions, kvs, posibility_of_tasks);
     }
 
-    std::cout << "Generated " << operations.size() << " operations" << std::endl;
+    std::cout << "Generated " << operations.size() << " operations"
+              << std::endl;
 
     std::string kv_file_name_hint = kv_file_name;
     std::replace(kv_file_name_hint.begin(), kv_file_name_hint.end(), '/', '-');
