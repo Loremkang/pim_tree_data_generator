@@ -12,7 +12,7 @@ class ZipfianGenerator {
     int num_partition_;
     std::vector<double> zipf_possibility_, zipf_possibility_aggregated_;
 
-    size_t range_size;
+    uint64_t range_size;
     const size_t random_resolution = 1048576;
 
 public:
@@ -47,7 +47,7 @@ public:
 
     // return (l, size) for range[l, l + size)
     std::pair<uint64_t, uint64_t> KeyRangeForPartition(int partition_id) {
-        size_t start = range_size * partition_id;
+        uint64_t start = range_size * partition_id;
         if (UINT64_MAX - start < range_size) {
             return {start, UINT64_MAX - start + 1};
         } else {
@@ -84,6 +84,8 @@ public:
     template<typename GetKeyF>
     void PrintTopKHotestPartition(size_t size, GetKeyF get_key, size_t k) {
         assert(k <= num_partition_);
+        static_assert(std::is_same<uint64_t, decltype(get_key(0))>::value);
+
         std::vector<size_t> partition_count(num_partition_, 0);
         for (size_t i = 0; i < size; i ++) {
             partition_count[FindPartition(get_key(i))]++;

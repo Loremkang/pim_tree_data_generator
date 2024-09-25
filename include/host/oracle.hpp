@@ -8,7 +8,6 @@
 #include <map>
 #include "operation_def.hpp"
 #include "value.hpp"
-using namespace std;
 
 // class batch_parallel_oracle_base {
 //     public:
@@ -20,33 +19,50 @@ using namespace std;
 //     virtual size_t size() = 0;
 // };
 
-class map_oracle {
+class Oracle {
     public:
-    std::map<uint64_t, uint64_t> data;
-    std::vector<uint64_t> keys;
+    std::map<int64_t, int64_t> data;
+    std::vector<int64_t> keys;
 
     template<typename GetKVF>
-    void init(size_t size, GetKVF get_kv) {
-        assert(get_kv(0).key == 0);
+    void Init(size_t size, GetKVF get_kv) {
+        assert(get_kv(0).key == INT64_MIN);
         size_t load_batch_size = 1e6;
         for (size_t i = 0; i < size; i += load_batch_size) {
             size_t load_size = std::min(load_batch_size, size - i);
-            insert_batch(load_size, [&](size_t j) { return get_kv(i + j); });
+            RunBatchInsert(load_size, [&](size_t j) { return get_kv(i + j); });
             std::cout << "Loaded " << i + load_size << " keys" << std::endl;
         }
     }
 
-    key_value predecessor(uint64_t key) {
+    key_value Predecessor(int64_t key) {
         auto itr = data.upper_bound(key);
         assert(itr != data.begin());
         itr--;
-        return (key_value){.key = itr->first, .value = itr->second};
+        return (key_value)(*itr);
     }
     
-    template<typename GetKeyF>
-    std::vector<key_value> predecessor_batch(size_t size, GetKeyF get_key) {
+    template <typename GetKeyF>
+    std::vector<key_value> RunBatchGet(size_t size, GetKeyF get_key) {
         static_assert(
-            std::is_same<typename std::uint64_t, decltype(get_key(0))>::value);
+            std::is_same<int64_t, decltype(get_key(0))>::value, "get_key(0) must return int64_t");
+        std::vector<key_value> ret(size);
+        parlay::parallel_for(0, size, [&](size_t i) {
+            int64_t key = get_key(i);
+            auto itr = data.find(key);
+            if (itr != data.end()) {
+                ret[i] = (key_value)(*itr);
+            } else {
+                ret[i] = (key_value){INT64_MIN, INT64_MIN};
+            }
+        });
+        return ret;
+    }
+
+    template<typename GetKeyF>
+    std::vector<key_value> RunBatchPredecessor(size_t size, GetKeyF get_key) {
+        static_assert(
+            std::is_same<int64_t, decltype(get_key(0))>::value, "get_key(0) must return int64_t");
 
         std::vector<key_value> ret(size);
         parlay::parallel_for(0, size, [&](size_t i) {
@@ -58,17 +74,30 @@ class map_oracle {
     }
 
     template<typename GetKVF>
-    void insert_batch(size_t size, GetKVF get_kv) {
+    void RunBatchInsert(size_t size, GetKVF get_kv) {
+        static_assert(
+            std::is_same<key_value, decltype(get_kv(0))>::value, "get_kv(0) must return key_value");
+        std::vector<key_value> kvs(size);
+        parlay::parallel_for(0, size, [&](size_t i) {
+            kvs[i] = get_kv(i);
+        });
+        parlay::sort_inplace(kvs);
         for (size_t i = 0; i < size; i++) {
-            key_value kv = get_kv(i);
-            data[kv.key] = kv.value;
+            key_value kv = kvs[i];
+            if (i > 0 && kvs[i - 1].key == kv.key) {
+                continue;
+            } else {
+                data[kv.key] = kv.value;
+            }
         }
     }
 
     template<typename GetKeyF>
-    void remove_batch(size_t size, GetKeyF get_key) {
+    void RunBatchRemove(size_t size, GetKeyF get_key) {
+        static_assert(
+            std::is_same<int64_t, decltype(get_key(0))>::value, "get_key(0) must return int64_t");
         for (size_t i = 0; i < size; i++) {
-            uint64_t key = get_key(i);
+            int64_t key = get_key(i);
             auto itr = data.find(key);
             if (itr != data.end()) {
                 data.erase(itr);
@@ -77,10 +106,10 @@ class map_oracle {
     }
 
     template<typename GetLRKeyF>
-    std::vector<std::vector<key_value>> scan_size_batch(size_t size, GetLRKeyF get_lrkey) {
+    std::vector<std::vector<key_value>> RunBatchScan(size_t size, GetLRKeyF get_lrkey) {
         std::vector<std::vector<key_value>> ret(size);
         parlay::parallel_for(0, size, [&](size_t i) {
-            uint64_t lkey, rkey;
+            int64_t lkey, rkey;
             std::tie(lkey, rkey) = get_lrkey(i);
             auto lpos = data.lower_bound(lkey);
             auto rpos = data.upper_bound(rkey);
@@ -91,16 +120,16 @@ class map_oracle {
         return ret;
     }
 
-    size_t size() {
+    size_t Size() {
         return data.size();
     }
 
-    std::vector<key_value> dump() {
+    std::vector<key_value> Dump() {
         size_t cnt = 0;
         size_t size = data.size();
         std::vector<key_value> ret(size);
         for (auto itr = data.begin(); itr != data.end(); itr++) {
-            ret[cnt++] = (key_value){.key = itr->first, .value = itr->second};
+            ret[cnt++] = (key_value)(*itr);
         }
         return ret;
     }

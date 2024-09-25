@@ -1,0 +1,128 @@
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#include <cmath>
+#include <fstream>
+#include <iostream>
+#include <vector>
+
+#include "fcntl.h"
+
+using namespace std;
+
+#include <parlay/primitives.h>
+#include <parlay/sequence.h>
+
+#include <argparse/argparse.hpp>
+
+#include "host/file.hpp"
+#include "host/operation_def.hpp"
+#include "host/oracle.hpp"
+#include "host/number_conversion.hpp"
+#include "zipfian_generator.hpp"
+#include <optional>
+
+key_value int64_kv_from_uint64_kv(uint64_t key, std::optional<uint64_t> value) {
+    if (value.has_value()) {
+        assert(value.value() == parlay::hash64(key));
+    }
+    int64_t new_key = ConvertI64UI64::UI64ToI64(key);
+    return key_value::default_kv_from_int64_key(new_key, 0);
+}
+
+void InitParser(argparse::ArgumentParser& cli_parser) {
+    cli_parser.add_argument("--kv_file", "-k")
+        .help("--kf_file [kv_file_ui64]");
+    cli_parser.add_argument("--op_file", "-o")
+        .help("--op_file [operation_file]");
+    cli_parser.add_argument("--target_file", "-t")
+        .help("--target_file [target_file]");
+    cli_parser.add_argument("--length", "-l")
+        .required()
+        .help("--length [number_of_elements_in_the_file]")
+        .scan<'i', int>();
+}
+
+int main(int argc, char* argv[]) {
+    // ./data_generator
+    argparse::ArgumentParser cli_parser;
+    InitParser(cli_parser);
+
+    try {
+        cli_parser.parse_args(argc, argv);
+    } catch (const std::runtime_error& err) {
+        std::cerr << err.what() << std::endl;
+        std::cerr << cli_parser;
+        std::exit(1);
+    }
+
+    std::string kv_file_name = cli_parser.get<std::string>("-k");
+    std::string op_file_name = cli_parser.get<std::string>("-o");
+    std::string to_file_name = cli_parser.get<std::string>("-t");
+    size_t length = cli_parser.get<int>("-l");
+
+    if (!kv_file_name.empty()) {
+        assert(op_file_name.empty());
+
+        using UI64KV = std::pair<uint64_t, uint64_t>;
+        std::vector<UI64KV> kvs;
+        kvs = LoadElementsFromBinary<UI64KV, true>(kv_file_name, 0, length);
+        assert(kvs.size() == length);
+
+        std::vector<key_value> int64_kvs(kvs.size());
+        parlay::parallel_for(0, kvs.size(), [&](size_t i) {
+            int64_kvs[i] = int64_kv_from_uint64_kv(kvs[i].first, kvs[i].second);
+        });
+
+        std::cout << "Write to " << to_file_name << std::endl;
+        StoreElementsToBinary<key_value>(to_file_name, int64_kvs);
+    } else if (!op_file_name.empty()) {
+        assert(kv_file_name.empty());
+
+        std::vector<union_operation> operations;
+        operations = LoadElementsFromBinary<union_operation, true>(op_file_name, 0, length);
+        assert(operations.size() == length);
+
+        std::vector<union_operation> int64_operations(operations.size());
+        parlay::parallel_for(0, operations.size(), [&](size_t i) {
+            switch(operations[i].type) {
+                case operation_t::get_t:
+                    int64_operations[i].type = operation_t::get_t;
+                    int64_operations[i].tsk.g.key = ConvertI64UI64::UI64ToI64(static_cast<uint64_t>(operations[i].tsk.g.key));
+                    break;
+                case operation_t::update_t:
+                    assert(false);
+                    break;
+                case operation_t::predecessor_t:
+                    int64_operations[i].type = operation_t::predecessor_t;
+                    int64_operations[i].tsk.p.key = ConvertI64UI64::UI64ToI64(static_cast<uint64_t>(operations[i].tsk.p.key));
+                    break;
+                case operation_t::insert_t:
+                    int64_operations[i].type = operation_t::insert_t;
+                    uint64_t key = static_cast<uint64_t>(operations[i].tsk.i.key);
+                    uint64_t value = static_cast<uint64_t>(operations[i].tsk.i.value);
+                    key_value new_kv = int64_kv_from_uint64_kv(key, value);
+                    int64_operations[i].tsk.i.key = new_kv.key;
+                    int64_operations[i].tsk.i.value = new_kv.value;
+                    break;
+                case operation_t::remove_t:
+                    int64_operations[i].type = operation_t::remove_t;
+                    int64_operations[i].tsk.r.key = ConvertI64UI64::UI64ToI64(static_cast<uint64_t>(operations[i].tsk.r.key));
+                    break;
+                case operation_t::scan_t:
+                    int64_operations[i].type = operation_t::scan_t;
+                    int64_operations[i].tsk.s.lkey = ConvertI64UI64::UI64ToI64(static_cast<uint64_t>(operations[i].tsk.s.lkey));
+                    int64_operations[i].tsk.s.rkey = ConvertI64UI64::UI64ToI64(static_cast<uint64_t>(operations[i].tsk.s.rkey));
+                    break;
+                default:
+                    assert(false);
+            }
+        });
+
+        std::cout << "Write to " << to_file_name << std::endl;
+        StoreElementsToBinary<union_operation>(to_file_name, int64_operations);
+    } else {
+        std::cerr << "Please specify either kv_file or op_file" << std::endl;
+        std::exit(1);
+    }
+}
