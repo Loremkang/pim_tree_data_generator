@@ -24,15 +24,10 @@ class Oracle {
     std::map<int64_t, int64_t> data;
     std::vector<int64_t> keys;
 
-    template<typename GetKVF>
-    void Init(size_t size, GetKVF get_kv) {
-        assert(get_kv(0).key == INT64_MIN);
-        size_t load_batch_size = 1e6;
-        for (size_t i = 0; i < size; i += load_batch_size) {
-            size_t load_size = std::min(load_batch_size, size - i);
-            RunBatchInsert(load_size, [&](size_t j) { return get_kv(i + j); });
-            std::cout << "Loaded " << i + load_size << " keys" << std::endl;
-        }
+    void Init() {
+        data.clear();
+        keys.clear();
+        data[INT64_MIN] = INT64_MIN;
     }
 
     key_value Predecessor(int64_t key) {

@@ -27,25 +27,12 @@ const double EPS = 1e-12;
 const size_t kNumPartitions = 64;
 const size_t kPrintTopK = 10;
 
-std::vector<int64_t> UniformRandomKeys(size_t size, size_t seed, bool sort) {
-    std::vector<int64_t> ret(size);
-    parlay::parallel_for(0, size, [&](size_t i) {
-        ret[i] = ConvertI64UI64::UI64ToI64(parlay::hash64(seed + i));
-    });
-    ret[0] = 0;
-    if (sort) {
-        parlay::sort_inplace(ret);
-    }
-    return ret;
-}
-
 std::vector<key_value> UniformRandomKVs(size_t size, size_t seed, bool sort) {
     std::vector<key_value> ret(size);
     parlay::parallel_for(0, size, [&](size_t i) {
         int64_t key = ConvertI64UI64::UI64ToI64(parlay::hash64(seed + i));
         ret[i] = key_value::default_kv_from_int64_key(key, 0);
     });
-    ret[0] = key_value::default_kv_from_int64_key(INT64_MIN, 0);
     if (sort) {
         parlay::sort_inplace(ret);
     }
@@ -54,6 +41,7 @@ std::vector<key_value> UniformRandomKVs(size_t size, size_t seed, bool sort) {
 
 std::vector<key_value> LoadOrInitKVs(std::string file_name, size_t length) {
     assert(file_name != "");
+    file_name += "_" + std::to_string(length);
 
     struct stat buffer;
     std::vector<key_value> kvs;
@@ -70,9 +58,9 @@ std::vector<key_value> LoadOrInitKVs(std::string file_name, size_t length) {
     }
 
     // Ensure kvs has a key with value 0
-    assert(std::any_of(kvs.begin(), kvs.end(),
-                       [](const key_value& kv) { return kv.key == 0; }) &&
-           "kvs must contain a key with value 0");
+    assert(!std::any_of(kvs.begin(), kvs.end(),
+                       [](const key_value& kv) { return kv.key == INT64_MIN; }) &&
+           "kvs must not contain any key with value INT64_MIN");
 
     return kvs;
 }
@@ -100,18 +88,20 @@ size_t GetBatchType(vector<double> possibility, size_t idx, size_t seed = 0) {
 void GenerateGetBatch(union_operation* target, size_t batch_size,
                       operation_t batch_type, double alpha,
                       ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                      Oracle& oracle, size_t seed = 0) {
+                      Oracle* oracle, size_t seed = 0) {
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
         auto [start, size] =
             zipf_gen.KeyRangeForPartition(distribution_in_partitions[i]);
         uint64_t rand_gen_key = start + parlay::hash64(i + seed) % size;
         int64_t gen_key = ConvertI64UI64::UI64ToI64(rand_gen_key);
-        int64_t get_key = oracle.Predecessor(gen_key).key;
+        assert(oracle != nullptr);
+        int64_t get_key = oracle->Predecessor(gen_key).key;
+        assert(get_key != INT64_MIN && "get key should not be INT64_MIN");
 
         target[i].type = batch_type;
         target[i].tsk.g.key = get_key;
-        assert(oracle.Predecessor(get_key).key == get_key);
+        assert(oracle->Predecessor(get_key).key == get_key);
     });
     zipf_gen.PrintTopKHotestPartition(
         batch_size,
@@ -124,13 +114,15 @@ void GenerateGetBatch(union_operation* target, size_t batch_size,
 void GeneratePredecessorBatch(union_operation* target, size_t batch_size,
                               operation_t batch_type, double alpha,
                               ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                              Oracle& oracle, size_t seed = 0) {
+                              Oracle* oracle, size_t seed = 0) {
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
         auto [start, size] =
             zipf_gen.KeyRangeForPartition(distribution_in_partitions[i]);
         uint64_t rand_gen_key = start + parlay::hash64(i + seed) % size;
         int64_t gen_key = ConvertI64UI64::UI64ToI64(rand_gen_key);
+        assert(gen_key != INT64_MIN && "pred key should not be INT64_MIN");
+
         target[i].type = batch_type;
         target[i].tsk.p.key = gen_key;
     });
@@ -145,25 +137,29 @@ void GeneratePredecessorBatch(union_operation* target, size_t batch_size,
 void GenerateInsertBatch(union_operation* target, size_t batch_size,
                          operation_t batch_type, double alpha,
                          ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                         Oracle& oracle, size_t seed = 0) {
+                         Oracle* oracle, size_t seed = 0) {
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
         auto [start, size] =
             zipf_gen.KeyRangeForPartition(distribution_in_partitions[i]);
         uint64_t rand_gen_key = start + parlay::hash64(i + seed) % size;
         int64_t gen_key = ConvertI64UI64::UI64ToI64(rand_gen_key);
+        assert(gen_key != INT64_MIN && "insert key should not be INT64_MIN");
+
         key_value gen_kv =
             key_value::default_kv_from_int64_key(gen_key, seed + i);
         target[i].type = batch_type;
         target[i].tsk.i.key = gen_kv.key;
         target[i].tsk.i.value = gen_kv.value;
     });
-    oracle.RunBatchInsert(batch_size, [&](size_t i) {
-        key_value kv;
-        kv.key = target[i].tsk.i.key;
-        kv.value = target[i].tsk.i.value;
-        return kv;
-    });
+    if (oracle != nullptr) {
+        oracle->RunBatchInsert(batch_size, [&](size_t i) {
+            key_value kv;
+            kv.key = target[i].tsk.i.key;
+            kv.value = target[i].tsk.i.value;
+            return kv;
+        });
+    }
     zipf_gen.PrintTopKHotestPartition(
         batch_size,
         [&](size_t i) -> uint64_t {
@@ -175,18 +171,21 @@ void GenerateInsertBatch(union_operation* target, size_t batch_size,
 void GenerateRemoveBatch(union_operation* target, size_t batch_size,
                          operation_t batch_type, double alpha,
                          ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                         Oracle& oracle, size_t seed = 0) {
+                         Oracle* oracle, size_t seed = 0) {
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
         auto [start, size] =
             zipf_gen.KeyRangeForPartition(distribution_in_partitions[i]);
         uint64_t rand_gen_key = start + parlay::hash64(i + seed) % size;
         int64_t gen_key = ConvertI64UI64::UI64ToI64(rand_gen_key);
-        int64_t remove_key = oracle.Predecessor(gen_key).key;
+        assert(oracle != nullptr);
+        int64_t remove_key = oracle->Predecessor(gen_key).key;
+        assert(remove_key != INT64_MIN && "remove key should not be INT64_MIN");
+
         assert(remove_key != 0);
         target[i].type = batch_type;
         target[i].tsk.r.key = remove_key;
-        assert(oracle.Predecessor(remove_key).key == remove_key);
+        assert(oracle->Predecessor(remove_key).key == remove_key);
     });
     zipf_gen.PrintTopKHotestPartition(
         batch_size,
@@ -194,15 +193,17 @@ void GenerateRemoveBatch(union_operation* target, size_t batch_size,
             return ConvertI64UI64::I64ToUI64(target[i].tsk.r.key);
         },
         kPrintTopK);
-    oracle.RunBatchRemove(batch_size,
+    assert(oracle != nullptr);
+    oracle->RunBatchRemove(batch_size,
                           [&](size_t i) { return target[i].tsk.r.key; });
 }
 
 void GenerateScanBatch(union_operation* target, size_t batch_size,
                        operation_t batch_type, double alpha,
                        ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                       Oracle& oracle, size_t seed = 0) {
-    size_t scan_length = UINT64_MAX / oracle.Size() * scan_factor;
+                       Oracle* oracle, size_t seed = 0) {
+    assert(oracle != nullptr);
+    size_t scan_length = UINT64_MAX / oracle->Size() * scan_factor;
 
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
@@ -213,6 +214,8 @@ void GenerateScanBatch(union_operation* target, size_t batch_size,
 
         int64_t gen_key = ConvertI64UI64::UI64ToI64(rand_gen_key);
         int64_t scan_key = gen_key;
+        assert(scan_key != INT64_MIN && "scan key should not be INT64_MIN");
+
         target[i].type = batch_type;
         target[i].tsk.s.lkey = scan_key;
         target[i].tsk.s.rkey = scan_key + scan_length;
@@ -258,10 +261,19 @@ std::vector<union_operation> GenerateTestFile(
     assert(ops_size % batch_size == 0 &&
            "ops_size should be multiple of batch_size");
 
-    Oracle oracle;
-    oracle.Init(kvs.size(), [&](size_t i) { return kvs[i]; });
+    Oracle* oracle = nullptr;
+    if (possibilities[operation_t::get_t] > EPS || possibilities[operation_t::remove_t] > EPS || possibilities[operation_t::scan_t] > EPS) {
+        oracle = new Oracle();
+        oracle->Init();
+        // need oracle to generate data
+        for (size_t i = 0; i < kvs.size(); i += batch_size) {
+            oracle->RunBatchInsert(batch_size, [&](size_t j) { return kvs[i + j]; });
+        }
+    } else {
+        std::cout << "No need to generate oracle" << std::endl;
+    }
 
-    std::cout << "Oracle size: " << oracle.Size() << std::endl;
+    std::cout << "Oracle size: " << ((oracle != nullptr) ? oracle->Size() : 0ull) << std::endl;
 
     size_t batch_size_scan = batch_size / scan_factor;
     auto zipf_gen = ZipfianGenerator(kNumPartitions, alpha);
