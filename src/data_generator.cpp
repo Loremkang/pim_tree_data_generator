@@ -39,7 +39,7 @@ std::vector<key_value> UniformRandomKVs(size_t size, size_t seed, bool sort) {
     return ret;
 }
 
-std::vector<key_value> LoadOrInitKVs(std::string file_name, size_t length) {
+std::vector<key_value> LoadOrInitKVs(std::string file_name, size_t length, size_t seed) {
     assert(file_name != "");
     file_name += "_" + std::to_string(length);
 
@@ -51,7 +51,7 @@ std::vector<key_value> LoadOrInitKVs(std::string file_name, size_t length) {
                   << std::endl;
     } else {
         // Initialize keys with some logic if file does not exist
-        kvs = UniformRandomKVs(length, 0, true);
+        kvs = UniformRandomKVs(length, seed, true);
         std::cout << "Generated " << kvs.size() << " keys" << std::endl;
         StoreElementsToBinary<key_value>(file_name, kvs);
         std::cout << "Generated keys stored to " << file_name << std::endl;
@@ -88,7 +88,7 @@ size_t GetBatchType(vector<double> possibility, size_t idx, size_t seed = 0) {
 void GenerateGetBatch(union_operation* target, size_t batch_size,
                       operation_t batch_type, double alpha,
                       ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                      Oracle* oracle, size_t seed = 0) {
+                      Oracle* oracle, size_t seed) {
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
         auto [start, size] =
@@ -114,7 +114,7 @@ void GenerateGetBatch(union_operation* target, size_t batch_size,
 void GeneratePredecessorBatch(union_operation* target, size_t batch_size,
                               operation_t batch_type, double alpha,
                               ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                              Oracle* oracle, size_t seed = 0) {
+                              Oracle* oracle, size_t seed) {
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
         auto [start, size] =
@@ -137,7 +137,7 @@ void GeneratePredecessorBatch(union_operation* target, size_t batch_size,
 void GenerateInsertBatch(union_operation* target, size_t batch_size,
                          operation_t batch_type, double alpha,
                          ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                         Oracle* oracle, size_t seed = 0) {
+                         Oracle* oracle, size_t seed) {
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
         auto [start, size] =
@@ -171,7 +171,7 @@ void GenerateInsertBatch(union_operation* target, size_t batch_size,
 void GenerateRemoveBatch(union_operation* target, size_t batch_size,
                          operation_t batch_type, double alpha,
                          ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                         Oracle* oracle, size_t seed = 0) {
+                         Oracle* oracle, size_t seed) {
     auto distribution_in_partitions = zipf_gen.Generate(batch_size, seed);
     parlay::parallel_for(0, batch_size, [&](size_t i) {
         auto [start, size] =
@@ -201,7 +201,7 @@ void GenerateRemoveBatch(union_operation* target, size_t batch_size,
 void GenerateScanBatch(union_operation* target, size_t batch_size,
                        operation_t batch_type, double alpha,
                        ZipfianGenerator& zipf_gen, size_t kNumPartitions,
-                       Oracle* oracle, size_t seed = 0) {
+                       Oracle* oracle, size_t seed) {
     assert(oracle != nullptr);
     size_t scan_length = UINT64_MAX / oracle->Size() * scan_factor;
 
@@ -257,7 +257,7 @@ std::vector<union_operation> GenerateInitFile(std::string file_name,
 std::vector<union_operation> GenerateTestFile(
     std::string file_name, bool init_file, size_t batch_size, size_t ops_size,
     double alpha, size_t kNumPartitions, std::vector<key_value>& kvs,
-    std::vector<double>& possibilities) {
+    std::vector<double>& possibilities, size_t seed) {
     assert(ops_size % batch_size == 0 &&
            "ops_size should be multiple of batch_size");
 
@@ -286,27 +286,27 @@ std::vector<union_operation> GenerateTestFile(
         switch (batch_type) {
             case operation_t::get_t:
                 GenerateGetBatch(operations.data() + i, batch_size, batch_type,
-                                 alpha, zipf_gen, kNumPartitions, oracle, i);
+                                 alpha, zipf_gen, kNumPartitions, oracle, i + seed);
                 break;
             case operation_t::predecessor_t:
                 GeneratePredecessorBatch(operations.data() + i, batch_size,
                                          batch_type, alpha, zipf_gen,
-                                         kNumPartitions, oracle, i);
+                                         kNumPartitions, oracle, i + seed);
                 break;
             case operation_t::insert_t:
                 GenerateInsertBatch(operations.data() + i, batch_size,
                                     batch_type, alpha, zipf_gen, kNumPartitions,
-                                    oracle, i);
+                                    oracle, i + seed);
                 break;
             case operation_t::remove_t:
                 GenerateRemoveBatch(operations.data() + i, batch_size,
                                     batch_type, alpha, zipf_gen, kNumPartitions,
-                                    oracle, i);
+                                    oracle, i + seed);
                 break;
             case operation_t::scan_t:
                 GenerateScanBatch(operations.data() + i, batch_size_scan,
                                   batch_type, alpha, zipf_gen, kNumPartitions,
-                                  oracle, i);
+                                  oracle, i + seed);
                 break;
             default:
                 assert(false && "Invalid batch type");
@@ -386,7 +386,7 @@ int main(int argc, char* argv[]) {
 
     std::string kv_file_name = cli_parser.get<std::string>("-f");
     size_t kv_length = cli_parser.get<int>("-k");
-    std::vector<key_value> kvs = LoadOrInitKVs(kv_file_name, kv_length);
+    std::vector<key_value> kvs = LoadOrInitKVs(kv_file_name, kv_length, 0);
 
     size_t test_length = cli_parser.get<int>("-l");
     size_t batch_size = cli_parser.get<int>("-b");
@@ -415,7 +415,7 @@ int main(int argc, char* argv[]) {
     } else {
         operations = GenerateTestFile(output_file_name, false, batch_size,
                                       test_length, zipfian_alpha,
-                                      kNumPartitions, kvs, posibility_of_tasks);
+                                      kNumPartitions, kvs, posibility_of_tasks, 0);
     }
 
     std::cout << "Generated " << operations.size() << " operations"
